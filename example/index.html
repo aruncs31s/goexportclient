@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GOExport — Go Client SDK Tester</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --text-muted: #9ca3af;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent: #10b981;
+      --accent-hover: #059669;
+      --code-bg: #030712;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      padding: 32px 16px;
+      max-width: 1050px;
+      margin: 0 auto;
+    }
+
+    header {
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: #f9fafb;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .badge {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+    }
+
+    p.subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 850px) { .grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .card h2 { font-size: 15px; font-weight: 600; color: #f9fafb; margin-bottom: 12px; }
+
+    .form-group { margin-bottom: 12px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    label { display: block; font-size: 13px; font-weight: 500; color: var(--text-muted); margin-bottom: 4px; }
+
+    input {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    input:focus { outline: none; border-color: var(--primary); }
+
+    .btn-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+    button {
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    button.btn-primary { background: var(--primary); color: #fff; }
+    button.btn-primary:hover { background: var(--primary-hover); }
+
+    button.btn-accent { background: var(--accent); color: #fff; }
+    button.btn-accent:hover { background: var(--accent-hover); }
+
+    button.btn-secondary { background: #1f2937; color: var(--text); border-color: var(--border); }
+    button.btn-secondary:hover { background: #374151; color: #fff; }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      color: #34d399;
+      padding: 14px;
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      overflow-x: auto;
+      max-height: 400px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>GOExport Go Client SDK Console <span class="badge">pkg/client</span></h1>
+    <p class="subtitle">Interactively test the official Go SDK driver package (<code>client.New()</code>) against the GOExport SaaS backend.</p>
+  </header>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>1. Client SDK Driver Settings</h2>
+        <div class="form-group">
+          <label>Target Service API Base URL</label>
+          <input id="targetApi" value="http://localhost:8080">
+        </div>
+        <div class="form-group">
+          <label>Auth Token (Authorization: Bearer)</label>
+          <input id="authToken" placeholder="e.g. secret-token">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tenant ID (X-Tenant-ID)</label>
+            <input id="tenantId" value="inst-101">
+          </div>
+          <div class="form-group">
+            <label>User ID (X-User-ID)</label>
+            <input id="userId" value="user-42">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>2. Target Input (Provide URL OR HTML)</h2>
+        <div class="form-group">
+          <label>Section</label>
+          <input id="section" value="invoices">
+        </div>
+        <div class="form-group">
+          <label>Target URL</label>
+          <input id="targetUrl" value="https://example.com">
+        </div>
+        <div class="form-group">
+          <label>Target HTML</label>
+          <textarea id="targetHtml" rows="5" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); padding:8px 12px; font-family:'JetBrains Mono', monospace; font-size:12px;" placeholder="e.g. <h1>Hello</h1><p>Invoice detail...</p>"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>3. SDK Driver Methods</h2>
+        <div class="btn-group">
+          <button id="exportUrl" class="btn-accent">client.ExportURL()</button>
+          <button id="exportHtml" class="btn-accent">client.ExportHTML()</button>
+          <button id="createExport" class="btn-primary">client.CreateExport()</button>
+        </div>
+        <div class="btn-group" style="margin-top: 10px;">
+          <button id="getStatus" class="btn-secondary">client.GetStatus()</button>
+          <button id="downloadPdf" class="btn-secondary">client.DownloadPDF()</button>
+          <button id="listMy" class="btn-secondary">client.ListMyExports()</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Go SDK Response Output</h2>
+        <pre id="result">Ready to test Go Client SDK driver (github.com/aruncs31s/goexport/pkg/client)...</pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let exportID = '';
+    const result = document.querySelector('#result');
+    const show = val => result.textContent = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
+
+    const getSDKHeaders = () => ({
+      'Content-Type': 'application/json',
+      'X-Target-API': document.querySelector('#targetApi').value.trim(),
+      'Authorization': document.querySelector('#authToken').value.trim(),
+      'X-Tenant-ID': document.querySelector('#tenantId').value.trim(),
+      'X-User-ID': document.querySelector('#userId').value.trim(),
+    });
+
+    // Single-Line ExportURL SDK Method
+    document.querySelector('#exportUrl').onclick = async () => {
+      const url = document.querySelector('#targetUrl').value.trim();
+      const section = document.querySelector('#section').value.trim();
+      show('Calling SDK method: client.ExportURL(ctx, "' + url + '", "' + section + '")...');
+
+      try {
+        const resp = await fetch('/sdk/export-url', {
+          method: 'POST',
+          headers: getSDKHeaders(),
+          body: JSON.stringify({ url, section })
+        });
+        if (!resp.ok) return show(await resp.json());
+        const blob = await resp.blob();
+        const downloadUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = 'sdk-export.pdf';
+        a.click();
+        show('SDK ExportURL completed successfully. PDF downloaded.');
+      } catch (err) {
+        show('SDK ExportURL Error: ' + err.message);
+      }
+    };
+
+    // Single-Line ExportHTML SDK Method
+    document.querySelector('#exportHtml').onclick = async () => {
+      const html = document.querySelector('#targetHtml').value.trim();
+      const section = document.querySelector('#section').value.trim();
+      if (!html) return show('Please enter target HTML content.');
+      show('Calling SDK method: client.ExportHTML(ctx, HTML, "' + section + '")...');
+
+      try {
+        const resp = await fetch('/sdk/export-html', {
+          method: 'POST',
+          headers: getSDKHeaders(),
+          body: JSON.stringify({ html, section })
+        });
+        if (!resp.ok) return show(await resp.json());
+        const blob = await resp.blob();
+        const downloadUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = 'sdk-export.pdf';
+        a.click();
+        show('SDK ExportHTML completed successfully. PDF downloaded.');
+      } catch (err) {
+        show('SDK ExportHTML Error: ' + err.message);
+      }
+    };
+
+    // CreateExport SDK Method
+    document.querySelector('#createExport').onclick = async () => {
+      const url = document.querySelector('#targetUrl').value.trim();
+      const html = document.querySelector('#targetHtml').value.trim();
+      const section = document.querySelector('#section').value.trim();
+      const payload = { section };
+      if (url) payload.url = url;
+      if (html) payload.html = html;
+      try {
+        const resp = await fetch('/sdk/create', {
+          method: 'POST',
+          headers: getSDKHeaders(),
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (data.id) exportID = data.id;
+        show(data);
+      } catch (err) { show('Error: ' + err.message); }
+    };
+
+    // GetStatus SDK Method
+    document.querySelector('#getStatus').onclick = async () => {
+      if (!exportID) return show('No active export ID. Call CreateExport first.');
+      try {
+        const resp = await fetch('/sdk/status?id=' + encodeURIComponent(exportID), { headers: getSDKHeaders() });
+        show(await resp.json());
+      } catch (err) { show('Error: ' + err.message); }
+    };
+
+    // DownloadPDF SDK Method
+    document.querySelector('#downloadPdf').onclick = async () => {
+      if (!exportID) return show('No active export ID.');
+      try {
+        const resp = await fetch('/sdk/download?id=' + encodeURIComponent(exportID), { headers: getSDKHeaders() });
+        if (!resp.ok) return show(await resp.json());
+        const blob = await resp.blob();
+        const downloadUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = exportID + '.pdf';
+        a.click();
+        show('PDF downloaded via SDK DownloadPDF method.');
+      } catch (err) { show('Error: ' + err.message); }
+    };
+
+    // ListMyExports SDK Method
+    document.querySelector('#listMy').onclick = async () => {
+      const section = document.querySelector('#section').value.trim();
+      try {
+        const resp = await fetch('/sdk/list-my?section=' + encodeURIComponent(section), { headers: getSDKHeaders() });
+        show(await resp.json());
+      } catch (err) { show('Error: ' + err.message); }
+    };
+  </script>
+</body>
+</html>
