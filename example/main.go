@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/aruncs31s/goexport/pkg/client"
+	client "github.com/aruncs31s/goexportclient"
 )
 
 type sdkTestConfig struct {
@@ -31,7 +31,8 @@ func getClient(r *http.Request) *client.Client {
 	tenantID := r.Header.Get("X-Tenant-ID")
 	userID := r.Header.Get("X-User-ID")
 
-	return client.New(baseURL, token,
+	return client.New(
+		baseURL, token,
 		client.WithTenant(tenantID),
 		client.WithUser(userID),
 	)
@@ -56,7 +57,7 @@ func main() {
 		defer file.Close()
 		body, _ := io.ReadAll(file)
 		name := filepath.Base(header.Filename)
-		_ = os.WriteFile("/tmp/"+name, body, 0644)
+		_ = os.WriteFile("/tmp/"+name, body, 0o644)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"url": "file:///tmp/" + name})
 	})

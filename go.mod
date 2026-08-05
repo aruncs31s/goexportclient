@@ -1,3 +1,3 @@
 module github.com/aruncs31s/goexportclient
 
-go 1.26.5
+go 1.25
