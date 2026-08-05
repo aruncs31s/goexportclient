@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	client "github.com/aruncs31s/goexport_client"
+	client "github.com/aruncs31s/goexportclient"
 )
 
 func TestClient_CreateExportAndDownloadPDF(t *testing.T) {
