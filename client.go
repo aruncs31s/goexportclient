@@ -303,6 +303,42 @@ func (c *Client) exportAndWait(ctx context.Context, req ExportRequest, pollInter
 	}
 }
 
+
+// ExportHTMLToKey submits the raw HTML, polls for status until completion, and returns the S3 ObjectKey instead of downloading the file.
+func (c *Client) ExportHTMLToKey(ctx context.Context, html, section string, pollInterval time.Duration, opts ...CallOption) (string, error) {
+	if pollInterval <= 0 {
+		pollInterval = 2 * time.Second
+	}
+
+	req := ExportRequest{HTML: html, Section: section}
+	created, err := c.CreateExport(ctx, req, opts...)
+	if err != nil {
+		return "", fmt.Errorf("export submit failed: %w", err)
+	}
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+			st, err := c.GetStatus(ctx, created.ID, opts...)
+			if err != nil {
+				return "", fmt.Errorf("poll status failed: %w", err)
+			}
+			switch st.State {
+			case "completed":
+				return st.ObjectKey, nil
+			case "failed":
+				return "", fmt.Errorf("export job %s failed: %s", created.ID, st.Error)
+			}
+		}
+	}
+}
+
+
 func parseAPIError(resp *http.Response) error {
 	var errBody struct {
 		Error string `json:"error"`
