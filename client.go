@@ -5,6 +5,11 @@ package goexporclient
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,11 +22,17 @@ import (
 
 // Client is the GOExport SaaS driver instance.
 type Client struct {
-	baseURL    string
-	token      string
-	tenantID   string
-	userID     string
-	httpClient *http.Client
+	baseURL      string
+	token        string
+	tenantID     string
+	userID       string
+	httpClient   *http.Client
+	s3Endpoint   string
+	s3Bucket     string
+	s3AccessKey  string
+	s3SecretKey  string
+	s3Region     string
+	useDefaultS3 bool
 }
 
 // Option configures a Client instance at initialization.
@@ -42,6 +53,24 @@ func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) { c.httpClient = hc }
 }
 
+// WithClientS3Storage sets the default S3 configuration on the client.
+func WithClientS3Storage(endpoint, bucket, accessKey, secretKey, region string) Option {
+	return func(c *Client) {
+		c.s3Endpoint = endpoint
+		c.s3Bucket = bucket
+		c.s3AccessKey = accessKey
+		c.s3SecretKey = secretKey
+		c.s3Region = region
+	}
+}
+
+// WithClientDefaultS3 configures the client to default to GoExport's default S3 bucket.
+func WithClientDefaultS3() Option {
+	return func(c *Client) {
+		c.useDefaultS3 = true
+	}
+}
+
 // New initializes a new GOExport SDK Client driver.
 func New(baseURL, token string, opts ...Option) *Client {
 	c := &Client{
@@ -57,10 +86,19 @@ func New(baseURL, token string, opts ...Option) *Client {
 
 // ExportRequest represents parameters for queueing a new PDF export.
 type ExportRequest struct {
-	URL         string `json:"url"`
-	HTML        string `json:"html,omitempty"`
-	Section     string `json:"section,omitempty"`
-	CallbackURL string `json:"callback_url,omitempty"`
+	URL          string `json:"url"`
+	HTML         string `json:"html,omitempty"`
+	Section      string `json:"section,omitempty"`
+	CallbackURL  string `json:"callback_url,omitempty"`
+	Sync         bool   `json:"sync,omitempty"`
+	UseDefaultS3 bool   `json:"use_default_s3,omitempty"`
+
+	// Optional Custom S3 configuration for this job
+	S3Endpoint  string `json:"s3_endpoint,omitempty"`
+	S3Bucket    string `json:"s3_bucket,omitempty"`
+	S3AccessKey string `json:"s3_access_key,omitempty"`
+	S3SecretKey string `json:"s3_secret_key,omitempty"`
+	S3Region    string `json:"s3_region,omitempty"`
 }
 
 // ExportResponse is returned upon successfully queuing an export.
@@ -96,8 +134,15 @@ type ExportListResponse struct {
 
 // CallConfig holds options for overriding settings per request.
 type callConfig struct {
-	tenantID string
-	userID   string
+	tenantID     string
+	userID       string
+	s3Endpoint   string
+	s3Bucket     string
+	s3AccessKey  string
+	s3SecretKey  string
+	s3Region     string
+	useDefaultS3 bool
+	sync         bool
 }
 
 // CallOption overrides configuration for a single SDK method invocation.
@@ -113,8 +158,44 @@ func WithCallUser(userID string) CallOption {
 	return func(cc *callConfig) { cc.userID = userID }
 }
 
+// WithS3Storage specifies a custom S3 storage destination for this export request.
+func WithS3Storage(endpoint, bucket, accessKey, secretKey, region string) CallOption {
+	return func(cc *callConfig) {
+		cc.s3Endpoint = endpoint
+		cc.s3Bucket = bucket
+		cc.s3AccessKey = accessKey
+		cc.s3SecretKey = secretKey
+		cc.s3Region = region
+		cc.useDefaultS3 = false
+	}
+}
+
+// WithDefaultS3 specifies using GoExport's default S3 bucket for this export request.
+func WithDefaultS3() CallOption {
+	return func(cc *callConfig) {
+		cc.useDefaultS3 = true
+		cc.s3Bucket = ""
+	}
+}
+
+// WithSync makes the request synchronous, returning the PDF bytes directly.
+func WithSync() CallOption {
+	return func(cc *callConfig) {
+		cc.sync = true
+	}
+}
+
 func (c *Client) buildCallConfig(opts []CallOption) callConfig {
-	cc := callConfig{tenantID: c.tenantID, userID: c.userID}
+	cc := callConfig{
+		tenantID:     c.tenantID,
+		userID:       c.userID,
+		s3Endpoint:   c.s3Endpoint,
+		s3Bucket:     c.s3Bucket,
+		s3AccessKey:  c.s3AccessKey,
+		s3SecretKey:  c.s3SecretKey,
+		s3Region:     c.s3Region,
+		useDefaultS3: c.useDefaultS3,
+	}
 	for _, opt := range opts {
 		opt(&cc)
 	}
@@ -137,6 +218,30 @@ func (c *Client) applyHeaders(req *http.Request, cc callConfig) {
 // CreateExport submits a new PDF export job to GOExport.
 func (c *Client) CreateExport(ctx context.Context, req ExportRequest, opts ...CallOption) (*ExportResponse, error) {
 	cc := c.buildCallConfig(opts)
+
+	req.Sync = cc.sync
+	req.UseDefaultS3 = cc.useDefaultS3
+
+	if !cc.useDefaultS3 && cc.s3Bucket != "" {
+		req.S3Bucket = cc.s3Bucket
+		req.S3Endpoint = cc.s3Endpoint
+		req.S3Region = cc.s3Region
+
+		// Encrypt S3 credentials using built-in default key (empty key defaults to built-in)
+		encAccessKey, err := encrypt(cc.s3AccessKey, "")
+		if err == nil {
+			req.S3AccessKey = encAccessKey
+		} else {
+			req.S3AccessKey = cc.s3AccessKey
+		}
+
+		encSecretKey, err := encrypt(cc.s3SecretKey, "")
+		if err == nil {
+			req.S3SecretKey = encSecretKey
+		} else {
+			req.S3SecretKey = cc.s3SecretKey
+		}
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -153,6 +258,10 @@ func (c *Client) CreateExport(ctx context.Context, req ExportRequest, opts ...Ca
 		return nil, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK && cc.sync {
+		return nil, fmt.Errorf("synchronous PDF response returned. Use ExportHTML or ExportURL with WithSync() call option instead of calling CreateExport directly")
+	}
 
 	if resp.StatusCode != http.StatusAccepted {
 		return nil, parseAPIError(resp)
@@ -276,6 +385,11 @@ func (c *Client) ExportHTML(ctx context.Context, html, section string, pollInter
 }
 
 func (c *Client) exportAndWait(ctx context.Context, req ExportRequest, pollInterval time.Duration, opts ...CallOption) ([]byte, error) {
+	cc := c.buildCallConfig(opts)
+	if cc.sync {
+		return c.exportSync(ctx, req, opts...)
+	}
+
 	created, err := c.CreateExport(ctx, req, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("export submit failed: %w", err)
@@ -303,9 +417,63 @@ func (c *Client) exportAndWait(ctx context.Context, req ExportRequest, pollInter
 	}
 }
 
+func (c *Client) exportSync(ctx context.Context, req ExportRequest, opts ...CallOption) ([]byte, error) {
+	cc := c.buildCallConfig(opts)
+	req.Sync = true
+	req.UseDefaultS3 = cc.useDefaultS3
+
+	if !cc.useDefaultS3 && cc.s3Bucket != "" {
+		req.S3Bucket = cc.s3Bucket
+		req.S3Endpoint = cc.s3Endpoint
+		req.S3Region = cc.s3Region
+
+		encAccessKey, err := encrypt(cc.s3AccessKey, "")
+		if err == nil {
+			req.S3AccessKey = encAccessKey
+		} else {
+			req.S3AccessKey = cc.s3AccessKey
+		}
+
+		encSecretKey, err := encrypt(cc.s3SecretKey, "")
+		if err == nil {
+			req.S3SecretKey = encSecretKey
+		} else {
+			req.S3SecretKey = cc.s3SecretKey
+		}
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/exports", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	c.applyHeaders(httpReq, cc)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseAPIError(resp)
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
 
 // ExportHTMLToKey submits the raw HTML, polls for status until completion, and returns the S3 ObjectKey instead of downloading the file.
 func (c *Client) ExportHTMLToKey(ctx context.Context, html, section string, pollInterval time.Duration, opts ...CallOption) (string, error) {
+	cc := c.buildCallConfig(opts)
+	if cc.sync {
+		return "", fmt.Errorf("synchronous mode cannot be used with ExportHTMLToKey (which expects an S3 object key). Use ExportHTML or ExportURL instead")
+	}
+
 	if pollInterval <= 0 {
 		pollInterval = 2 * time.Second
 	}
@@ -349,3 +517,34 @@ func parseAPIError(resp *http.Response) error {
 	}
 	return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(bodyBytes))
 }
+
+func getAESKey(keyStr string) []byte {
+	if keyStr == "" {
+		keyStr = "goexport-default-secure-shared-key-2026"
+	}
+	hasher := sha256.New()
+	hasher.Write([]byte(keyStr))
+	return hasher.Sum(nil)
+}
+
+func encrypt(plaintext, keyStr string) (string, error) {
+	if plaintext == "" {
+		return "", nil
+	}
+	key := getAESKey(keyStr)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
