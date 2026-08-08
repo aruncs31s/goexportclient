@@ -15,7 +15,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -467,7 +466,6 @@ func (c *Client) exportSync(ctx context.Context, req ExportRequest, opts ...Call
 	return io.ReadAll(resp.Body)
 }
 
-
 // ExportHTMLToKey submits the raw HTML, polls for status until completion, and returns the S3 ObjectKey instead of downloading the file.
 func (c *Client) ExportHTMLToKey(ctx context.Context, html, section string, pollInterval time.Duration, opts ...CallOption) (string, error) {
 	cc := c.buildCallConfig(opts)
@@ -506,7 +504,6 @@ func (c *Client) ExportHTMLToKey(ctx context.Context, html, section string, poll
 		}
 	}
 }
-
 
 func parseAPIError(resp *http.Response) error {
 	var errBody struct {
@@ -548,4 +545,3 @@ func encrypt(plaintext, keyStr string) (string, error) {
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
-
