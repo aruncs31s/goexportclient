@@ -5,11 +5,17 @@ package goexporclient
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +67,13 @@ type ExportRequest struct {
 	HTML        string `json:"html,omitempty"`
 	Section     string `json:"section,omitempty"`
 	CallbackURL string `json:"callback_url,omitempty"`
+
+	// Optional Custom S3 configuration for this job
+	S3Endpoint  string `json:"s3_endpoint,omitempty"`
+	S3Bucket    string `json:"s3_bucket,omitempty"`
+	S3AccessKey string `json:"s3_access_key,omitempty"`
+	S3SecretKey string `json:"s3_secret_key,omitempty"`
+	S3Region    string `json:"s3_region,omitempty"`
 }
 
 // ExportResponse is returned upon successfully queuing an export.
@@ -96,8 +109,13 @@ type ExportListResponse struct {
 
 // CallConfig holds options for overriding settings per request.
 type callConfig struct {
-	tenantID string
-	userID   string
+	tenantID    string
+	userID      string
+	s3Endpoint  string
+	s3Bucket    string
+	s3AccessKey string
+	s3SecretKey string
+	s3Region    string
 }
 
 // CallOption overrides configuration for a single SDK method invocation.
@@ -111,6 +129,17 @@ func WithCallTenant(tenantID string) CallOption {
 // WithCallUser sets or overrides the X-User-ID header for a single API call.
 func WithCallUser(userID string) CallOption {
 	return func(cc *callConfig) { cc.userID = userID }
+}
+
+// WithS3Storage specifies a custom S3 storage destination for this export request.
+func WithS3Storage(endpoint, bucket, accessKey, secretKey, region string) CallOption {
+	return func(cc *callConfig) {
+		cc.s3Endpoint = endpoint
+		cc.s3Bucket = bucket
+		cc.s3AccessKey = accessKey
+		cc.s3SecretKey = secretKey
+		cc.s3Region = region
+	}
 }
 
 func (c *Client) buildCallConfig(opts []CallOption) callConfig {
@@ -137,6 +166,27 @@ func (c *Client) applyHeaders(req *http.Request, cc callConfig) {
 // CreateExport submits a new PDF export job to GOExport.
 func (c *Client) CreateExport(ctx context.Context, req ExportRequest, opts ...CallOption) (*ExportResponse, error) {
 	cc := c.buildCallConfig(opts)
+	if cc.s3Bucket != "" {
+		req.S3Bucket = cc.s3Bucket
+		req.S3Endpoint = cc.s3Endpoint
+		req.S3Region = cc.s3Region
+
+		// Encrypt S3 credentials using ENCRYPT_KEY environment variable (or default)
+		encryptKey := os.Getenv("ENCRYPT_KEY")
+		encAccessKey, err := encrypt(cc.s3AccessKey, encryptKey)
+		if err == nil {
+			req.S3AccessKey = encAccessKey
+		} else {
+			req.S3AccessKey = cc.s3AccessKey
+		}
+
+		encSecretKey, err := encrypt(cc.s3SecretKey, encryptKey)
+		if err == nil {
+			req.S3SecretKey = encSecretKey
+		} else {
+			req.S3SecretKey = cc.s3SecretKey
+		}
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -303,6 +353,42 @@ func (c *Client) exportAndWait(ctx context.Context, req ExportRequest, pollInter
 	}
 }
 
+
+// ExportHTMLToKey submits the raw HTML, polls for status until completion, and returns the S3 ObjectKey instead of downloading the file.
+func (c *Client) ExportHTMLToKey(ctx context.Context, html, section string, pollInterval time.Duration, opts ...CallOption) (string, error) {
+	if pollInterval <= 0 {
+		pollInterval = 2 * time.Second
+	}
+
+	req := ExportRequest{HTML: html, Section: section}
+	created, err := c.CreateExport(ctx, req, opts...)
+	if err != nil {
+		return "", fmt.Errorf("export submit failed: %w", err)
+	}
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+			st, err := c.GetStatus(ctx, created.ID, opts...)
+			if err != nil {
+				return "", fmt.Errorf("poll status failed: %w", err)
+			}
+			switch st.State {
+			case "completed":
+				return st.ObjectKey, nil
+			case "failed":
+				return "", fmt.Errorf("export job %s failed: %s", created.ID, st.Error)
+			}
+		}
+	}
+}
+
+
 func parseAPIError(resp *http.Response) error {
 	var errBody struct {
 		Error string `json:"error"`
@@ -313,3 +399,34 @@ func parseAPIError(resp *http.Response) error {
 	}
 	return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(bodyBytes))
 }
+
+func getAESKey(keyStr string) []byte {
+	if keyStr == "" {
+		keyStr = "goexport-default-secure-shared-key-2026"
+	}
+	hasher := sha256.New()
+	hasher.Write([]byte(keyStr))
+	return hasher.Sum(nil)
+}
+
+func encrypt(plaintext, keyStr string) (string, error) {
+	if plaintext == "" {
+		return "", nil
+	}
+	key := getAESKey(keyStr)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
