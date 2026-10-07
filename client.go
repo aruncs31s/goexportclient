@@ -61,13 +61,16 @@ func WithHTTPClient(hc *http.Client) Option {
 }
 
 // WithClientS3Storage sets the default S3 configuration on the client.
-func WithClientS3Storage(endpoint, bucket, accessKey, secretKey, region string) Option {
+func WithClientS3Storage(endpoint, bucket, accessKey, secretKey, region string, folder ...string) Option {
 	return func(c *Client) {
 		c.s3Endpoint = endpoint
 		c.s3Bucket = bucket
 		c.s3AccessKey = accessKey
 		c.s3SecretKey = secretKey
 		c.s3Region = region
+		if len(folder) > 0 {
+			c.customFolder = folder[0]
+		}
 	}
 }
 
@@ -150,6 +153,7 @@ type callConfig struct {
 	s3SecretKey  string
 	s3Region     string
 	useDefaultS3 bool
+	customFolder string
 	sync         bool
 }
 
@@ -167,7 +171,7 @@ func WithCallUser(userID string) CallOption {
 }
 
 // WithS3Storage specifies a custom S3 storage destination for this export request.
-func WithS3Storage(endpoint, bucket, accessKey, secretKey, region string) CallOption {
+func WithS3Storage(endpoint, bucket, accessKey, secretKey, region string, folder ...string) CallOption {
 	return func(cc *callConfig) {
 		cc.s3Endpoint = endpoint
 		cc.s3Bucket = bucket
@@ -175,6 +179,16 @@ func WithS3Storage(endpoint, bucket, accessKey, secretKey, region string) CallOp
 		cc.s3SecretKey = secretKey
 		cc.s3Region = region
 		cc.useDefaultS3 = false
+		if len(folder) > 0 {
+			cc.customFolder = folder[0]
+		}
+	}
+}
+
+// WithCallCustomFolder overrides the root custom folder prefix for a single export request.
+func WithCallCustomFolder(customFolder string) CallOption {
+	return func(cc *callConfig) {
+		cc.customFolder = customFolder
 	}
 }
 
@@ -203,6 +217,7 @@ func (c *Client) buildCallConfig(opts []CallOption) callConfig {
 		s3SecretKey:  c.s3SecretKey,
 		s3Region:     c.s3Region,
 		useDefaultS3: c.useDefaultS3,
+		customFolder: c.customFolder,
 	}
 	for _, opt := range opts {
 		opt(&cc)
@@ -228,7 +243,9 @@ func (c *Client) CreateExport(ctx context.Context, req ExportRequest, opts ...Ca
 	cc := c.buildCallConfig(opts)
 
 	req.Sync = cc.sync
-	req.CustomFolder = c.customFolder
+	if req.CustomFolder == "" {
+		req.CustomFolder = cc.customFolder
+	}
 	req.UseDefaultS3 = cc.useDefaultS3
 
 	if !cc.useDefaultS3 && cc.s3Bucket != "" {
@@ -430,6 +447,9 @@ func (c *Client) exportSync(ctx context.Context, req ExportRequest, opts ...Call
 	cc := c.buildCallConfig(opts)
 	req.Sync = true
 	req.UseDefaultS3 = cc.useDefaultS3
+	if req.CustomFolder == "" {
+		req.CustomFolder = cc.customFolder
+	}
 
 	if !cc.useDefaultS3 && cc.s3Bucket != "" {
 		req.S3Bucket = cc.s3Bucket

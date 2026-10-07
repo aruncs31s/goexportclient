@@ -156,3 +156,58 @@ func TestClient_ExportHTML(t *testing.T) {
 		t.Fatalf("receivedHTML = %q, want '<h1>Hello</h1>'", receivedHTML)
 	}
 }
+
+func TestClient_CustomFolderOption(t *testing.T) {
+	var receivedCustomFolder string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			CustomFolder string `json:"custom_folder"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		receivedCustomFolder = req.CustomFolder
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(client.ExportResponse{
+			ID:    "job-folder",
+			State: "queued",
+		})
+	}))
+	defer server.Close()
+
+	// 1. Client-level WithCustomFolder
+	c := client.New(server.URL, "token", client.WithCustomFolder("global-folder"))
+	_, err := c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	})
+	if err != nil {
+		t.Fatalf("CreateExport error = %v", err)
+	}
+	if receivedCustomFolder != "global-folder" {
+		t.Fatalf("receivedCustomFolder = %q, want 'global-folder'", receivedCustomFolder)
+	}
+
+	// 2. Per-request WithCallCustomFolder override
+	_, err = c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	}, client.WithCallCustomFolder("override-folder"))
+	if err != nil {
+		t.Fatalf("CreateExport error = %v", err)
+	}
+	if receivedCustomFolder != "override-folder" {
+		t.Fatalf("receivedCustomFolder = %q, want 'override-folder'", receivedCustomFolder)
+	}
+
+	// 3. Per-request WithS3Storage with optional folder
+	_, err = c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	}, client.WithS3Storage("http://s3.local", "my-bucket", "ak", "sk", "us-east-1", "s3-folder"))
+	if err != nil {
+		t.Fatalf("CreateExport error = %v", err)
+	}
+	if receivedCustomFolder != "s3-folder" {
+		t.Fatalf("receivedCustomFolder = %q, want 's3-folder'", receivedCustomFolder)
+	}
+}
