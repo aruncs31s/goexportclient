@@ -33,6 +33,7 @@ type Client struct {
 	s3SecretKey  string
 	s3Region     string
 	useDefaultS3 bool
+	customFolder string // This is used to specify the custom folder for the export client like bucket/folder
 }
 
 // Option configures a Client instance at initialization.
@@ -41,6 +42,12 @@ type Option func(*Client)
 // WithTenant sets the default X-Tenant-ID header for all requests made by this client.
 func WithTenant(tenantID string) Option {
 	return func(c *Client) { c.tenantID = tenantID }
+}
+
+func WithCustomFolder(customFolder string) Option {
+	return func(c *Client) {
+		c.customFolder = customFolder
+	}
 }
 
 // WithUser sets the default X-User-ID header for all requests made by this client.
@@ -94,11 +101,12 @@ type ExportRequest struct {
 	UseDefaultS3 bool   `json:"use_default_s3,omitempty"`
 
 	// Optional Custom S3 configuration for this job
-	S3Endpoint  string `json:"s3_endpoint,omitempty"`
-	S3Bucket    string `json:"s3_bucket,omitempty"`
-	S3AccessKey string `json:"s3_access_key,omitempty"`
-	S3SecretKey string `json:"s3_secret_key,omitempty"`
-	S3Region    string `json:"s3_region,omitempty"`
+	S3Endpoint   string `json:"s3_endpoint,omitempty"`
+	S3Bucket     string `json:"s3_bucket,omitempty"`
+	S3AccessKey  string `json:"s3_access_key,omitempty"`
+	S3SecretKey  string `json:"s3_secret_key,omitempty"`
+	S3Region     string `json:"s3_region,omitempty"`
+	CustomFolder string `json:"custom_folder"`
 }
 
 // ExportResponse is returned upon successfully queuing an export.
@@ -220,6 +228,7 @@ func (c *Client) CreateExport(ctx context.Context, req ExportRequest, opts ...Ca
 	cc := c.buildCallConfig(opts)
 
 	req.Sync = cc.sync
+	req.CustomFolder = c.customFolder
 	req.UseDefaultS3 = cc.useDefaultS3
 
 	if !cc.useDefaultS3 && cc.s3Bucket != "" {
