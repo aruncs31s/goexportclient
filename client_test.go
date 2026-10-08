@@ -156,3 +156,117 @@ func TestClient_ExportHTML(t *testing.T) {
 		t.Fatalf("receivedHTML = %q, want '<h1>Hello</h1>'", receivedHTML)
 	}
 }
+
+func TestClient_CustomFolderOption(t *testing.T) {
+	var receivedCustomFolder string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			CustomFolder string `json:"custom_folder"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		receivedCustomFolder = req.CustomFolder
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(client.ExportResponse{
+			ID:    "job-folder",
+			State: "queued",
+		})
+	}))
+	defer server.Close()
+
+	// 1. Client-level WithCustomFolder
+	c := client.New(server.URL, "token", client.WithCustomFolder("global-folder"))
+	_, err := c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	})
+	if err != nil {
+		t.Fatalf("CreateExport error = %v", err)
+	}
+	if receivedCustomFolder != "global-folder" {
+		t.Fatalf("receivedCustomFolder = %q, want 'global-folder'", receivedCustomFolder)
+	}
+
+	// 2. Per-request WithCallCustomFolder override
+	_, err = c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	}, client.WithCallCustomFolder("override-folder"))
+	if err != nil {
+		t.Fatalf("CreateExport error = %v", err)
+	}
+	if receivedCustomFolder != "override-folder" {
+		t.Fatalf("receivedCustomFolder = %q, want 'override-folder'", receivedCustomFolder)
+	}
+
+	// 3. Per-request WithS3Storage with optional folder
+	_, err = c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	}, client.WithS3Storage("http://s3.local", "my-bucket", "ak", "sk", "us-east-1", "s3-folder"))
+	if err != nil {
+		t.Fatalf("CreateExport error = %v", err)
+	}
+	if receivedCustomFolder != "s3-folder" {
+		t.Fatalf("receivedCustomFolder = %q, want 's3-folder'", receivedCustomFolder)
+	}
+}
+
+func TestClient_RetryOn502ServiceUnavailable(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			// Simulate Render spinning up / bad gateway on first attempt
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("502 Bad Gateway"))
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(client.ExportResponse{
+			ID:    "job-retry-ok",
+			State: "queued",
+		})
+	}))
+	defer server.Close()
+
+	c := client.New(server.URL, "token", client.WithRetry(1, 20*time.Millisecond))
+	resp, err := c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	})
+	if err != nil {
+		t.Fatalf("CreateExport failed on retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if resp.ID != "job-retry-ok" {
+		t.Fatalf("resp.ID = %q, want 'job-retry-ok'", resp.ID)
+	}
+}
+
+func TestClient_RetryContextCancellation(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// Configure a long 1-minute retry wait
+	c := client.New(server.URL, "token", client.WithRetry(1, 1*time.Minute))
+	_, err := c.CreateExport(ctx, client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	})
+	if err == nil {
+		t.Fatal("expected error due to context cancellation, got nil")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt before cancel, got %d", attempts)
+	}
+}
