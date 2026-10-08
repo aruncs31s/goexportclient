@@ -11,8 +11,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,6 +36,8 @@ type Client struct {
 	s3Region     string
 	useDefaultS3 bool
 	customFolder string // This is used to specify the custom folder for the export client like bucket/folder
+	maxRetries   int
+	retryWait    time.Duration
 }
 
 // Option configures a Client instance at initialization.
@@ -47,6 +51,15 @@ func WithTenant(tenantID string) Option {
 func WithCustomFolder(customFolder string) Option {
 	return func(c *Client) {
 		c.customFolder = customFolder
+	}
+}
+
+// WithRetry configures automatic retries when the GOExport service is unreachable or returns 502/503/504.
+// Set maxRetries = 0 to disable retries.
+func WithRetry(maxRetries int, waitDuration time.Duration) Option {
+	return func(c *Client) {
+		c.maxRetries = maxRetries
+		c.retryWait = waitDuration
 	}
 }
 
@@ -82,11 +95,14 @@ func WithClientDefaultS3() Option {
 }
 
 // New initializes a new GOExport SDK Client driver.
+// By default, it retries once after waiting 1 minute if the service is unreachable.
 func New(baseURL, token string, opts ...Option) *Client {
 	c := &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		token:      token,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		maxRetries: 1,
+		retryWait:  1 * time.Minute,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -155,6 +171,8 @@ type callConfig struct {
 	useDefaultS3 bool
 	customFolder string
 	sync         bool
+	maxRetries   int
+	retryWait    time.Duration
 }
 
 // CallOption overrides configuration for a single SDK method invocation.
@@ -168,6 +186,14 @@ func WithCallTenant(tenantID string) CallOption {
 // WithCallUser sets or overrides the X-User-ID header for a single API call.
 func WithCallUser(userID string) CallOption {
 	return func(cc *callConfig) { cc.userID = userID }
+}
+
+// WithCallRetry overrides the retry behavior for a single API call.
+func WithCallRetry(maxRetries int, waitDuration time.Duration) CallOption {
+	return func(cc *callConfig) {
+		cc.maxRetries = maxRetries
+		cc.retryWait = waitDuration
+	}
 }
 
 // WithS3Storage specifies a custom S3 storage destination for this export request.
@@ -218,6 +244,8 @@ func (c *Client) buildCallConfig(opts []CallOption) callConfig {
 		s3Region:     c.s3Region,
 		useDefaultS3: c.useDefaultS3,
 		customFolder: c.customFolder,
+		maxRetries:   c.maxRetries,
+		retryWait:    c.retryWait,
 	}
 	for _, opt := range opts {
 		opt(&cc)
@@ -279,7 +307,7 @@ func (c *Client) CreateExport(ctx context.Context, req ExportRequest, opts ...Ca
 	}
 	c.applyHeaders(httpReq, cc)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.doRequest(ctx, httpReq, cc)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
@@ -309,7 +337,7 @@ func (c *Client) GetStatus(ctx context.Context, id string, opts ...CallOption) (
 	}
 	c.applyHeaders(httpReq, cc)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.doRequest(ctx, httpReq, cc)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
@@ -335,7 +363,7 @@ func (c *Client) DownloadPDF(ctx context.Context, id string, opts ...CallOption)
 	}
 	c.applyHeaders(httpReq, cc)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.doRequest(ctx, httpReq, cc)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
@@ -369,7 +397,7 @@ func (c *Client) ListMyExports(ctx context.Context, section string, limit, offse
 	}
 	c.applyHeaders(httpReq, cc)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.doRequest(ctx, httpReq, cc)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
@@ -482,7 +510,7 @@ func (c *Client) exportSync(ctx context.Context, req ExportRequest, opts ...Call
 	}
 	c.applyHeaders(httpReq, cc)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.doRequest(ctx, httpReq, cc)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
@@ -573,4 +601,86 @@ func encrypt(plaintext, keyStr string) (string, error) {
 	}
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func (c *Client) doRequest(ctx context.Context, httpReq *http.Request, cc callConfig) (*http.Response, error) {
+	maxRetries := cc.maxRetries
+	retryWait := cc.retryWait
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryWait):
+			}
+		}
+
+		reqClone := httpReq.Clone(ctx)
+		if httpReq.GetBody != nil {
+			newBody, err := httpReq.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("reset request body for retry: %w", err)
+			}
+			reqClone.Body = newBody
+		}
+
+		resp, err := c.httpClient.Do(reqClone)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if isRetryableError(err) && attempt < maxRetries {
+				lastErr = err
+				continue
+			}
+			return nil, err
+		}
+
+		if isRetryableStatusCode(resp.StatusCode) && attempt < maxRetries {
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("service temporarily unavailable (status %d)", resp.StatusCode)
+			continue
+		}
+
+		return resp, nil
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("request failed after %d retries", maxRetries)
+}
+
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "eof") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "server misbehaving")
+}
+
+func isRetryableStatusCode(code int) bool {
+	return code == http.StatusBadGateway || // 502 (e.g. Render spin up)
+		code == http.StatusServiceUnavailable || // 503
+		code == http.StatusGatewayTimeout || // 504
+		code == http.StatusTooManyRequests // 429
 }

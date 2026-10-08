@@ -211,3 +211,62 @@ func TestClient_CustomFolderOption(t *testing.T) {
 		t.Fatalf("receivedCustomFolder = %q, want 's3-folder'", receivedCustomFolder)
 	}
 }
+
+func TestClient_RetryOn502ServiceUnavailable(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			// Simulate Render spinning up / bad gateway on first attempt
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("502 Bad Gateway"))
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(client.ExportResponse{
+			ID:    "job-retry-ok",
+			State: "queued",
+		})
+	}))
+	defer server.Close()
+
+	c := client.New(server.URL, "token", client.WithRetry(1, 20*time.Millisecond))
+	resp, err := c.CreateExport(context.Background(), client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	})
+	if err != nil {
+		t.Fatalf("CreateExport failed on retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if resp.ID != "job-retry-ok" {
+		t.Fatalf("resp.ID = %q, want 'job-retry-ok'", resp.ID)
+	}
+}
+
+func TestClient_RetryContextCancellation(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// Configure a long 1-minute retry wait
+	c := client.New(server.URL, "token", client.WithRetry(1, 1*time.Minute))
+	_, err := c.CreateExport(ctx, client.ExportRequest{
+		URL:     "https://example.com",
+		Section: "reports",
+	})
+	if err == nil {
+		t.Fatal("expected error due to context cancellation, got nil")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt before cancel, got %d", attempts)
+	}
+}
